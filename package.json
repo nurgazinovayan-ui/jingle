@@ -5,9 +5,13 @@
   "description": "Онлайн музыкальный плеер для деплоя на Vercel",
   "type": "module",
   "scripts": {
-    "dev": "vercel dev"
+    "dev": "vercel dev",
+    "build:vendor": "npx -y esbuild@0.25.11 vendor/entry.js --bundle --format=esm --platform=browser --minify --target=es2020 --outfile=vendor/blob-client.js"
   },
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "@vercel/blob": "2.8.2"
   }
 }
