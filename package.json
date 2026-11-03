@@ -1,0 +1,13 @@
+{
+  "name": "jingle",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Онлайн музыкальный плеер для деплоя на Vercel",
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
