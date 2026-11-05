@@ -146,9 +146,9 @@ async function api(path, { method = "GET", admin = false } = {}) {
 }
 
 // ---------- Плейлист ----------
-async function fetchTracks({ fresh = false } = {}) {
+async function fetchTracks() {
   try {
-    const data = await api("/api/tracks" + (fresh ? `?_=${Date.now()}` : ""));
+    const data = await api("/api/tracks");
     return data.tracks || [];
   } catch (err) {
     if (err.status === 502) {
@@ -165,10 +165,12 @@ async function fetchTracks({ fresh = false } = {}) {
   }
 }
 
-async function reloadTracks() {
+// Подменяет плейлист свежим списком с сервера, не прерывая текущий трек
+function applyTracks(tracks) {
   const playingId = current()?.id;
-  state.tracks = await fetchTracks({ fresh: true });
+  state.tracks = tracks;
   state.index = playingId ? state.tracks.findIndex((t) => t.id === playingId) : -1;
+  if (playingId && state.index < 0) resetNowPlaying();
   state.history = [];
   renderList();
 }
@@ -655,26 +657,28 @@ async function uploadQueue() {
   state.queue = state.queue.filter((q) => q.status !== "done");
   renderQueue();
   if (ok) {
-    await reloadTracks();
-    toast(`Загружено треков: ${ok}`);
+    // Обновляем playlist.json на сервере и сразу получаем свежий список
+    try {
+      const data = await api("/api/tracks", { method: "POST", admin: true });
+      applyTracks(data.tracks || []);
+      toast(`Загружено треков: ${ok}`);
+    } catch (err) {
+      toast(`Файлы загружены, но плейлист не обновился: ${err.message}. Он обновится при следующей загрузке или удалении.`, { error: true, ms: 8000 });
+    }
   }
 }
 
 async function deleteTrack(i) {
   const t = state.tracks[i];
   if (!t || !confirm(`Удалить «${t.title}» насовсем?`)) return;
+  let data;
   try {
-    await api(`/api/tracks?url=${encodeURIComponent(t.src)}`, { method: "DELETE", admin: true });
+    data = await api(`/api/tracks?url=${encodeURIComponent(t.src)}`, { method: "DELETE", admin: true });
   } catch (err) {
     toast(err.message, { error: true });
     return;
   }
-  const wasCurrent = i === state.index;
-  state.tracks.splice(i, 1);
-  state.history = [];
-  if (wasCurrent) resetNowPlaying();
-  else if (i < state.index) state.index--;
-  renderList();
+  applyTracks(data.tracks || []);
   toast("Трек удалён");
 }
 

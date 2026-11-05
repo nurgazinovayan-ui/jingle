@@ -1,45 +1,57 @@
-import { list, del } from "@vercel/blob";
+import { del } from "@vercel/blob";
 import { playlist } from "../data/playlist.js";
 import { requireAdmin } from "../lib/auth.js";
-import { TRACK_PREFIX, blobToTrack, isTrackBlobUrl, storageConfigured } from "../lib/tracks.js";
+import { readManifest, rebuildManifest } from "../lib/manifest.js";
+import { isTrackBlobUrl, storageConfigured } from "../lib/tracks.js";
 
-// GET    /api/tracks            — все треки (публично, кэшируется на CDN)
-// DELETE /api/tracks?url=<url>  — удалить загруженный трек (только администратор)
+// GET    /api/tracks            — все треки (публично, кэшируется на CDN; читает только playlist.json)
+// POST   /api/tracks            — пересобрать плейлист после загрузки (только администратор)
+// DELETE /api/tracks?url=<url>  — удалить трек и пересобрать плейлист (только администратор)
 export default async function handler(req, res) {
   if (req.method === "GET") return getTracks(req, res);
+  if (req.method === "POST") return syncTracks(req, res);
   if (req.method === "DELETE") return deleteTrack(req, res);
-  res.setHeader("Allow", "GET, DELETE");
+  res.setHeader("Allow", "GET, POST, DELETE");
   return res.status(405).json({ error: "Method Not Allowed" });
 }
 
+const respond = (res, uploaded) => {
+  const tracks = [...playlist, ...uploaded];
+  return res.status(200).json({ storage: storageConfigured(), count: tracks.length, tracks });
+};
+
+const fail = (res, err, message) => {
+  console.error(message, err);
+  res.setHeader("Cache-Control", "no-store");
+  return res.status(502).json({ error: message });
+};
+
 async function getTracks(req, res) {
-  const tracks = [...playlist];
-  const storage = storageConfigured();
-
-  if (storage) {
-    try {
-      const uploaded = [];
-      let cursor;
-      do {
-        const page = await list({ prefix: TRACK_PREFIX, cursor, limit: 1000 });
-        for (const blob of page.blobs) {
-          const t = blobToTrack(blob);
-          if (t) uploaded.push(t);
-        }
-        cursor = page.hasMore ? page.cursor : undefined;
-      } while (cursor);
-      uploaded.sort((a, b) => a.uploadedAt.localeCompare(b.uploadedAt));
-      tracks.push(...uploaded);
-    } catch (err) {
-      console.error("Blob list failed:", err);
-      res.setHeader("Cache-Control", "no-store");
-      return res.status(502).json({ error: "Не удалось получить список треков из хранилища" });
-    }
+  if (!storageConfigured()) {
+    res.setHeader("Cache-Control", "public, max-age=0, s-maxage=60");
+    return respond(res, []);
   }
+  let uploaded;
+  try {
+    uploaded = await readManifest();
+    // Первый запуск (или файл повреждён) — один раз собираем плейлист из хранилища
+    if (!uploaded) uploaded = await rebuildManifest();
+  } catch (err) {
+    return fail(res, err, "Не удалось получить список треков из хранилища");
+  }
+  // CDN Vercel держит ответ 60 секунд, потом обновляет его в фоне
+  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=60, stale-while-revalidate=86400");
+  return respond(res, uploaded);
+}
 
-  // Кэш на CDN Vercel: 30 секунд свежий, потом обновляется в фоне.
-  res.setHeader("Cache-Control", "public, max-age=0, s-maxage=30, stale-while-revalidate=86400");
-  return res.status(200).json({ storage, count: tracks.length, tracks });
+async function syncTracks(req, res) {
+  res.setHeader("Cache-Control", "no-store");
+  if (!requireAdmin(req, res)) return;
+  try {
+    return respond(res, await rebuildManifest());
+  } catch (err) {
+    return fail(res, err, "Не удалось обновить плейлист");
+  }
 }
 
 async function deleteTrack(req, res) {
@@ -52,9 +64,8 @@ async function deleteTrack(req, res) {
   }
   try {
     await del(url);
-    return res.status(200).json({ ok: true });
+    return respond(res, await rebuildManifest());
   } catch (err) {
-    console.error("Blob delete failed:", err);
-    return res.status(502).json({ error: "Не удалось удалить трек" });
+    return fail(res, err, "Не удалось удалить трек");
   }
 }
